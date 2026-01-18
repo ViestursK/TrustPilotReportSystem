@@ -1,4 +1,5 @@
-from sqlalchemy import select, insert, update, func, and_, or_
+from sqlalchemy import select, insert, update, func, and_, or_, text
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from datetime import datetime
 import json
@@ -86,6 +87,10 @@ def get_latest_review_id(brand_id):
 def insert_reviews(brand_id, review_list):
     inserted, skipped = 0, 0
     
+    # Detect database type
+    db_url = str(engine.url)
+    is_postgres = 'postgresql' in db_url
+    
     with engine.begin() as conn:
         for review in review_list:
             try:
@@ -93,35 +98,47 @@ def insert_reviews(brand_id, review_list):
                 reply = review.get('reply')
                 labels_merged = review.get('labels', {}).get('merged')
                 
-                conn.execute(
-                    insert(reviews).values(
-                        id=review['id'],
-                        brand_id=brand_id,
-                        rating=review['rating'],
-                        text=review.get('text', ''),
-                        title=review.get('title', ''),
-                        author_name=consumer.get('displayName', ''),
-                        author_id=consumer.get('id', ''),
-                        author_image_url=consumer.get('imageUrl', ''),
-                        author_review_count=consumer.get('numberOfReviews', 0),
-                        author_country_code=consumer.get('countryCode', ''),
-                        author_has_image=consumer.get('hasImage', False),
-                        published_date=datetime.fromisoformat(review['dates']['publishedDate'].replace('Z', '')),
-                        updated_date=datetime.fromisoformat(review['dates']['updatedDate'].replace('Z', '')) if review['dates'].get('updatedDate') else None,
-                        experienced_date=datetime.fromisoformat(review['dates']['experiencedDate'].replace('Z', '')) if review['dates'].get('experiencedDate') else None,
-                        language=review.get('language', ''),
-                        source=review.get('source', ''),
-                        is_verified=review.get('labels', {}).get('verification', {}).get('isVerified', False),
-                        likes=review.get('likes', 0),
-                        reply_message=reply.get('message') if reply else None,
-                        reply_date=datetime.fromisoformat(reply['publishedDate'].replace('Z', '')) if reply and reply.get('publishedDate') else None,
-                        labels_merged=json.dumps(labels_merged) if labels_merged else None,
-                        topics=None,
-                        scraped_at=datetime.now(),
-                    )
-                )
-                inserted += 1
-            except Exception:
+                values = {
+                    'id': review['id'],
+                    'brand_id': brand_id,
+                    'rating': review['rating'],
+                    'text': review.get('text', ''),
+                    'title': review.get('title', ''),
+                    'author_name': consumer.get('displayName', ''),
+                    'author_id': consumer.get('id', ''),
+                    'author_image_url': consumer.get('imageUrl', ''),
+                    'author_review_count': consumer.get('numberOfReviews', 0),
+                    'author_country_code': consumer.get('countryCode', ''),
+                    'author_has_image': consumer.get('hasImage', False),
+                    'published_date': datetime.fromisoformat(review['dates']['publishedDate'].replace('Z', '')),
+                    'updated_date': datetime.fromisoformat(review['dates']['updatedDate'].replace('Z', '')) if review['dates'].get('updatedDate') else None,
+                    'experienced_date': datetime.fromisoformat(review['dates']['experiencedDate'].replace('Z', '')) if review['dates'].get('experiencedDate') else None,
+                    'language': review.get('language', ''),
+                    'source': review.get('source', ''),
+                    'is_verified': review.get('labels', {}).get('verification', {}).get('isVerified', False),
+                    'likes': review.get('likes', 0),
+                    'reply_message': reply.get('message') if reply else None,
+                    'reply_date': datetime.fromisoformat(reply['publishedDate'].replace('Z', '')) if reply and reply.get('publishedDate') else None,
+                    'labels_merged': json.dumps(labels_merged) if labels_merged else None,
+                    'topics': None,
+                    'scraped_at': datetime.now(),
+                }
+                
+                if is_postgres:
+                    stmt = pg_insert(reviews).values(**values)
+                    stmt = stmt.on_conflict_do_nothing(index_elements=['id'])
+                else:
+                    stmt = sqlite_insert(reviews).values(**values)
+                    stmt = stmt.on_conflict_do_nothing(index_elements=['id'])
+                
+                result = conn.execute(stmt)
+                if result.rowcount > 0:
+                    inserted += 1
+                else:
+                    skipped += 1
+                    
+            except Exception as e:
+                print(f"  [WARNING] Failed to insert review: {e}")
                 skipped += 1
     
     return inserted, skipped
@@ -162,6 +179,10 @@ def calculate_and_save_snapshot(
 ):
     week_start_dt = datetime.fromisoformat(week_start) if isinstance(week_start, str) else week_start
     week_end_dt = datetime.fromisoformat(week_end) if isinstance(week_end, str) else week_end
+    
+    # Detect database type
+    db_url = str(engine.url)
+    is_postgres = 'postgresql' in db_url
     
     with engine.begin() as conn:
         # Get all reviews for the week
@@ -209,41 +230,61 @@ def calculate_and_save_snapshot(
                 avg_response_time_hours = sum(response_times) / len(response_times)
         
         # Insert or replace
-        stmt = sqlite_insert(weekly_snapshots).values(
-            brand_id=brand_id,
-            week_key=week_key,
-            week_start=week_start_dt,
-            week_end=week_end_dt,
-            review_count=review_count,
-            avg_rating=avg_rating,
-            positive_count=positive,
-            neutral_count=neutral,
-            negative_count=negative,
-            organic_count=organic,
-            verified_count=verified,
-            invited_count=invited,
-            avg_response_time_hours=avg_response_time_hours,
-            top_mentions=json.dumps(top_mentions) if top_mentions else None,
-            ai_summary=ai_summary,
-            created_at=datetime.now(),
-        )
+        values = {
+            'brand_id': brand_id,
+            'week_key': week_key,
+            'week_start': week_start_dt,
+            'week_end': week_end_dt,
+            'review_count': review_count,
+            'avg_rating': avg_rating,
+            'positive_count': positive,
+            'neutral_count': neutral,
+            'negative_count': negative,
+            'organic_count': organic,
+            'verified_count': verified,
+            'invited_count': invited,
+            'avg_response_time_hours': avg_response_time_hours,
+            'top_mentions': json.dumps(top_mentions) if top_mentions else None,
+            'ai_summary': ai_summary,
+            'created_at': datetime.now(),
+        }
         
-        stmt = stmt.on_conflict_do_update(
-            index_elements=['brand_id', 'week_key'],
-            set_={
-                'review_count': review_count,
-                'avg_rating': avg_rating,
-                'positive_count': positive,
-                'neutral_count': neutral,
-                'negative_count': negative,
-                'organic_count': organic,
-                'verified_count': verified,
-                'invited_count': invited,
-                'avg_response_time_hours': avg_response_time_hours,
-                'top_mentions': json.dumps(top_mentions) if top_mentions else None,
-                'ai_summary': ai_summary,
-            }
-        )
+        if is_postgres:
+            stmt = pg_insert(weekly_snapshots).values(**values)
+            stmt = stmt.on_conflict_do_update(
+                index_elements=['brand_id', 'week_key'],
+                set_={
+                    'review_count': review_count,
+                    'avg_rating': avg_rating,
+                    'positive_count': positive,
+                    'neutral_count': neutral,
+                    'negative_count': negative,
+                    'organic_count': organic,
+                    'verified_count': verified,
+                    'invited_count': invited,
+                    'avg_response_time_hours': avg_response_time_hours,
+                    'top_mentions': json.dumps(top_mentions) if top_mentions else None,
+                    'ai_summary': ai_summary,
+                }
+            )
+        else:
+            stmt = sqlite_insert(weekly_snapshots).values(**values)
+            stmt = stmt.on_conflict_do_update(
+                index_elements=['brand_id', 'week_key'],
+                set_={
+                    'review_count': review_count,
+                    'avg_rating': avg_rating,
+                    'positive_count': positive,
+                    'neutral_count': neutral,
+                    'negative_count': negative,
+                    'organic_count': organic,
+                    'verified_count': verified,
+                    'invited_count': invited,
+                    'avg_response_time_hours': avg_response_time_hours,
+                    'top_mentions': json.dumps(top_mentions) if top_mentions else None,
+                    'ai_summary': ai_summary,
+                }
+            )
         
         conn.execute(stmt)
 
