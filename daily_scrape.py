@@ -39,7 +39,7 @@ def get_week_key(monday):
 # =============================================================================
 
 def daily_scrape_brand(domain, brand_id):
-    """Daily scrape for an existing brand (no JWT, smart pagination)"""
+    """Daily scrape for an existing brand (smart pagination, auto-tag topics)"""
     print(f"\n{'='*60}")
     print(f"DAILY SCRAPE: {domain}")
     print(f"Date: {datetime.now().strftime('%Y-%m-%d %H:%M')}")
@@ -50,19 +50,19 @@ def daily_scrape_brand(domain, brand_id):
     if last_review_id:
         print(f"[INFO] Last saved review: {last_review_id}")
     
-    # Scrape last 30 days (max 10 pages, no JWT, stop early if found)
+    # Scrape last 30 days (max 10 pages)
     max_pages = int(os.getenv('MAX_PAGES', 10))
     print(f"\n[INFO] Scraping last 30 days (max {max_pages} pages, public data)...")
     new_data = scraper.scrape_brand(
         domain, 
         max_pages=max_pages, 
-        use_jwt=False,  # No JWT for daily scrapes
-        last_review_id=last_review_id,  # Stop early when found
-        filter_last_30_days=True  # Only last 30 days for daily updates
+        use_jwt=False,
+        last_review_id=last_review_id,
+        filter_last_30_days=True
     )
     
     if not new_data:
-        print("[WARNING] Scrape failed")
+        print("[WARNING] Scrape failed, skipping")
         return False
     
     print(f"[INFO] Retrieved {len(new_data['reviews'])} reviews")
@@ -70,35 +70,52 @@ def daily_scrape_brand(domain, brand_id):
     # Update brand metadata
     database.update_brand_metadata(brand_id, new_data['company'])
     
-    # Insert reviews (with deduplication)
+    # Insert new reviews (deduplicated)
     inserted, skipped = database.insert_reviews(brand_id, new_data['reviews'])
+    print(f"[INFO] Reviews inserted: {inserted}, skipped: {skipped}")
     
-    if inserted == 0:
-        print("[WARNING] No new reviews")
-        # Still tag topics even if no new reviews (might be updating existing ones)
+    # ==========================
+    # ALWAYS TAG TOPICS
+    # ==========================
+    import tag_topics
     
-    # Tag reviews with topics (multilingual support)
-    top_mentions = new_data['company'].get('top_mentions', [])
+    # Determine top mentions
+    top_mentions = new_data['company'].get('top_mentions')
+    if not top_mentions:
+        # Fetch current top mentions from Trustpilot if missing
+        top_mentions = scraper.get_top_mentions(new_data['company']['business_id'])
+    
     if top_mentions:
-        import tag_topics
-        tag_topics.tag_reviews_with_topics(domain, brand_id, top_mentions)
+        # Get current week's reviews
+        today = datetime.now()
+        current_monday, current_sunday = get_week_boundaries(today)
+        week_reviews = database.get_reviews_for_week(
+            brand_id, current_monday.isoformat(), current_sunday.isoformat()
+        )
+        
+        if week_reviews:
+            print(f"[INFO] Tagging {len(week_reviews)} reviews with topics...")
+            tag_topics.tag_reviews_with_topics(domain, brand_id, top_mentions, reviews_list=week_reviews)
+        else:
+            print("[INFO] No reviews in current week to tag")
+    else:
+        print("[WARNING] No top mentions available for tagging")
     
-    # Update current week snapshot
-    today = datetime.now()
-    current_monday, current_sunday = get_week_boundaries(today)
+    # ==========================
+    # UPDATE CURRENT WEEK SNAPSHOT
+    # ==========================
     week_key = get_week_key(current_monday)
-    
     print(f"\n[INFO] Updating current week snapshot: {week_key}")
     database.calculate_and_save_snapshot(
         brand_id,
         week_key,
         current_monday.isoformat(),
         current_sunday.isoformat(),
-        new_data['company'].get('top_mentions'),
+        top_mentions,
         new_data['company'].get('ai_summary', {}).get('summary')
     )
     
-    print(f"\n[COMPLETE] Daily scrape complete")
+    print(f"\n[COMPLETE] Daily scrape complete for {domain}")
     return True
 
 # =============================================================================
@@ -125,12 +142,15 @@ def main():
     # Get existing brands from DB
     existing_brands = database.get_all_brand_domains()
     
-    # Check for new brands
+    # Detect new brands to onboard
     new_brands = [b for b in brands_env if b not in existing_brands]
     
+    # =========================
+    # Onboard new brands
+    # =========================
     if new_brands:
         print(f"\n{'='*70}")
-        print(f"[WARNING] NEW BRANDS DETECTED: {len(new_brands)}")
+        print(f"[INFO] NEW BRANDS DETECTED: {len(new_brands)}")
         print(f"{'='*70}")
         for brand in new_brands:
             print(f"  - {brand}")
@@ -139,32 +159,35 @@ def main():
         for brand in new_brands:
             try:
                 onboarding.onboard_brand(brand)
+                # Immediately run daily scrape logic for new brand
+                brand_id = database.get_brand_id(brand)
+                if brand_id:
+                    daily_scrape_brand(brand, brand_id)
             except Exception as e:
                 print(f"\n[WARNING] Onboarding failed for {brand}: {e}")
                 import traceback
                 traceback.print_exc()
-        
-        # Refresh existing brands list
-        existing_brands = database.get_all_brand_domains()
     
-    # Daily scrape for all existing brands (excluding newly onboarded ones)
-    brands_to_scrape = [b for b in existing_brands if b not in new_brands]
+    # Refresh the list of existing brands after onboarding
+    existing_brands = database.get_all_brand_domains()
     
-    if brands_to_scrape:
-        print(f"\n{'='*70}")
-        print(f"DAILY SCRAPE: {len(brands_to_scrape)} BRANDS")
-        print(f"{'='*70}")
-        
-        for brand in brands_to_scrape:
+    # =========================
+    # Daily scrape for all brands
+    # =========================
+    print(f"\n{'='*70}")
+    print(f"DAILY SCRAPE: {len(existing_brands)} BRANDS")
+    print(f"{'='*70}")
+    
+    for brand in existing_brands:
+        try:
             brand_id = database.get_brand_id(brand)
-            try:
-                daily_scrape_brand(brand, brand_id)
-            except Exception as e:
-                print(f"\n[WARNING] Error scraping {brand}: {e}")
-                import traceback
-                traceback.print_exc()
-    else:
-        print(f"\n[INFO] No existing brands to scrape (all were just onboarded)")
+            if not brand_id:
+                continue
+            daily_scrape_brand(brand, brand_id)
+        except Exception as e:
+            print(f"\n[WARNING] Error scraping {brand}: {e}")
+            import traceback
+            traceback.print_exc()
     
     print("\n" + "="*70)
     print("[COMPLETE] DAILY SCRAPE COMPLETE")

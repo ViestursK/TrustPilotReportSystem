@@ -1,339 +1,230 @@
-from sqlalchemy import select, insert, update, func, and_, or_, text
-from sqlalchemy.dialects.postgresql import insert as pg_insert
-from sqlalchemy.dialects.sqlite import insert as sqlite_insert
-from datetime import datetime
+# db/queries.py
+
 import json
+from datetime import datetime
+from sqlalchemy import text
 from db.engine import get_engine
-from db.schema import brands, reviews, weekly_snapshots
 
 engine = get_engine()
 
-# ---------- BRAND ----------
+from sqlalchemy import text
+from db.engine import get_engine
 
-def add_brand(domain, company_data, logo_base64=None):
-    ai_summary = company_data.get('ai_summary', {})
-    
+engine = get_engine()
+
+def get_brand_id(domain: str) -> int | None:
     with engine.begin() as conn:
-        result = conn.execute(
-            insert(brands).values(
-                domain=domain,
-                business_id=company_data['business_id'],
-                brand_name=company_data['brand_name'],
-                trust_score=company_data['trust_score'],
-                stars=company_data.get('stars', company_data['trust_score']),
-                total_reviews=company_data['total_reviews'],
-                past_week_reviews=company_data.get('past_week_reviews', 0),
-                logo_base64=logo_base64,
-                website=company_data.get('website', ''),
-                is_claimed=company_data.get('is_claimed', False),
-                categories=json.dumps(company_data.get('categories', [])),
-                ai_summary_text=ai_summary.get('summary') if ai_summary else None,
-                ai_summary_updated_at=ai_summary.get('updatedAt') or ai_summary.get('updated_at') if ai_summary else None,
-                ai_summary_language=ai_summary.get('lang') or ai_summary.get('language') if ai_summary else None,
-                ai_summary_model_version=ai_summary.get('modelVersion') or ai_summary.get('model_version') if ai_summary else None,
-                created_at=datetime.now(),
-            )
-        )
-        return result.inserted_primary_key[0]
+        row = conn.execute(
+            text("""
+                SELECT id
+                FROM brands
+                WHERE domain = :domain
+            """),
+            {"domain": domain}
+        ).fetchone()
 
-def get_all_brand_domains():
+        return row.id if row else None
+
+from sqlalchemy import text
+from db.engine import get_engine
+
+engine = get_engine()
+
+
+def get_snapshots_for_brand(brand_id: int, limit: int = 10):
+    """
+    Return latest weekly snapshots for a brand.
+    """
     with engine.begin() as conn:
-        return [r[0] for r in conn.execute(select(brands.c.domain))]
+        rows = conn.execute(
+            text("""
+                SELECT
+                    id,
+                    brand_id,
+                    week_key,
+                    week_start,
+                    week_end,
+                    review_count,
+                    avg_rating,
+                    positive_count,
+                    neutral_count,
+                    negative_count,
+                    organic_count,
+                    verified_count,
+                    invited_count,
+                    avg_response_time_hours,
+                    top_mentions,
+                    language_counts,
+                    mentions_sentiment,
+                    ai_summary,
+                    created_at
+                FROM weekly_snapshots
+                WHERE brand_id = :brand_id
+                ORDER BY week_start DESC
+                LIMIT :limit
+            """),
+            {
+                "brand_id": brand_id,
+                "limit": limit
+            }
+        ).mappings().all()
 
-def get_brand_id(domain):
-    with engine.begin() as conn:
-        return conn.execute(
-            select(brands.c.id).where(brands.c.domain == domain)
-        ).scalar()
+        # Convert RowMapping → dict (CLI expects JSON-serializable objects)
+        return [dict(row) for row in rows]
 
-def update_brand_metadata(brand_id, company_data):
-    ai_summary = company_data.get('ai_summary', {})
-    
-    with engine.begin() as conn:
-        conn.execute(
-            update(brands)
-            .where(brands.c.id == brand_id)
-            .values(
-                trust_score=company_data['trust_score'],
-                stars=company_data.get('stars', company_data['trust_score']),
-                total_reviews=company_data['total_reviews'],
-                past_week_reviews=company_data.get('past_week_reviews', 0),
-                ai_summary_text=ai_summary.get('summary') if ai_summary else None,
-                ai_summary_updated_at=ai_summary.get('updatedAt') or ai_summary.get('updated_at') if ai_summary else None,
-                ai_summary_language=ai_summary.get('lang') or ai_summary.get('language') if ai_summary else None,
-                ai_summary_model_version=ai_summary.get('modelVersion') or ai_summary.get('model_version') if ai_summary else None,
-                last_scraped_at=datetime.now(),
-            )
-        )
-
-def get_brand_info(brand_id):
-    with engine.begin() as conn:
-        result = conn.execute(
-            select(brands).where(brands.c.id == brand_id)
-        ).first()
-        return dict(result._mapping) if result else None
-
-# ---------- REVIEWS ----------
-
-def get_latest_review_id(brand_id):
-    with engine.begin() as conn:
-        return conn.execute(
-            select(reviews.c.id)
-            .where(reviews.c.brand_id == brand_id)
-            .order_by(reviews.c.published_date.desc())
-            .limit(1)
-        ).scalar()
-
-def insert_reviews(brand_id, review_list):
-    inserted, skipped = 0, 0
-    
-    # Detect database type
-    db_url = str(engine.url)
-    is_postgres = 'postgresql' in db_url
-    
-    with engine.begin() as conn:
-        for review in review_list:
-            try:
-                consumer = review.get('consumer', {})
-                reply = review.get('reply')
-                labels_merged = review.get('labels', {}).get('merged')
-                
-                values = {
-                    'id': review['id'],
-                    'brand_id': brand_id,
-                    'rating': review['rating'],
-                    'text': review.get('text', ''),
-                    'title': review.get('title', ''),
-                    'author_name': consumer.get('displayName', ''),
-                    'author_id': consumer.get('id', ''),
-                    'author_image_url': consumer.get('imageUrl', ''),
-                    'author_review_count': consumer.get('numberOfReviews', 0),
-                    'author_country_code': consumer.get('countryCode', ''),
-                    'author_has_image': consumer.get('hasImage', False),
-                    'published_date': datetime.fromisoformat(review['dates']['publishedDate'].replace('Z', '')),
-                    'updated_date': datetime.fromisoformat(review['dates']['updatedDate'].replace('Z', '')) if review['dates'].get('updatedDate') else None,
-                    'experienced_date': datetime.fromisoformat(review['dates']['experiencedDate'].replace('Z', '')) if review['dates'].get('experiencedDate') else None,
-                    'language': review.get('language', ''),
-                    'source': review.get('source', ''),
-                    'is_verified': review.get('labels', {}).get('verification', {}).get('isVerified', False),
-                    'likes': review.get('likes', 0),
-                    'reply_message': reply.get('message') if reply else None,
-                    'reply_date': datetime.fromisoformat(reply['publishedDate'].replace('Z', '')) if reply and reply.get('publishedDate') else None,
-                    'labels_merged': json.dumps(labels_merged) if labels_merged else None,
-                    'topics': None,
-                    'scraped_at': datetime.now(),
-                }
-                
-                if is_postgres:
-                    stmt = pg_insert(reviews).values(**values)
-                    stmt = stmt.on_conflict_do_nothing(index_elements=['id'])
-                else:
-                    stmt = sqlite_insert(reviews).values(**values)
-                    stmt = stmt.on_conflict_do_nothing(index_elements=['id'])
-                
-                result = conn.execute(stmt)
-                if result.rowcount > 0:
-                    inserted += 1
-                else:
-                    skipped += 1
-                    
-            except Exception as e:
-                print(f"  [WARNING] Failed to insert review: {e}")
-                skipped += 1
-    
-    return inserted, skipped
-
-def get_reviews_for_week(brand_id, week_start, week_end):
-    with engine.begin() as conn:
-        results = conn.execute(
-            select(reviews)
-            .where(
-                and_(
-                    reviews.c.brand_id == brand_id,
-                    reviews.c.published_date >= datetime.fromisoformat(week_start),
-                    reviews.c.published_date <= datetime.fromisoformat(week_end)
-                )
-            )
-            .order_by(reviews.c.published_date.desc())
-        ).fetchall()
-        return [dict(r._mapping) for r in results]
-
-def get_all_reviews_for_brand(brand_id):
-    with engine.begin() as conn:
-        results = conn.execute(
-            select(reviews)
-            .where(reviews.c.brand_id == brand_id)
-            .order_by(reviews.c.published_date.desc())
-        ).fetchall()
-        return [dict(r._mapping) for r in results]
-
-# ---------- SNAPSHOTS ----------
 
 def calculate_and_save_snapshot(
-    brand_id,
-    week_key,
+    brand_id: int,
+    week_key: str,
     week_start,
     week_end,
     top_mentions=None,
-    ai_summary=None,
+    ai_summary=None
 ):
-    week_start_dt = datetime.fromisoformat(week_start) if isinstance(week_start, str) else week_start
-    week_end_dt = datetime.fromisoformat(week_end) if isinstance(week_end, str) else week_end
-    
-    # Detect database type
-    db_url = str(engine.url)
-    is_postgres = 'postgresql' in db_url
-    
-    with engine.begin() as conn:
-        # Get all reviews for the week
-        review_results = conn.execute(
-            select(reviews)
-            .where(
-                and_(
-                    reviews.c.brand_id == brand_id,
-                    reviews.c.published_date >= week_start_dt,
-                    reviews.c.published_date <= week_end_dt
-                )
-            )
-        ).fetchall()
-        
-        review_data = [dict(r._mapping) for r in review_results]
-        
-        if not review_data:
-            return
-        
-        # Calculate stats
-        review_count = len(review_data)
-        avg_rating = sum(r['rating'] for r in review_data) / review_count
-        positive = sum(1 for r in review_data if r['rating'] >= 4)
-        neutral = sum(1 for r in review_data if r['rating'] == 3)
-        negative = sum(1 for r in review_data if r['rating'] <= 2)
-        organic = sum(1 for r in review_data if r['source'] == 'Organic')
-        verified = sum(1 for r in review_data if r['is_verified'])
-        invited = review_count - organic - verified
-        
-        # Calculate avg response time
-        reviews_with_replies = [r for r in review_data if r.get('reply_message') and r.get('reply_date')]
-        avg_response_time_hours = None
-        
-        if reviews_with_replies:
-            response_times = []
-            for r in reviews_with_replies:
-                try:
-                    diff_hours = (r['reply_date'] - r['published_date']).total_seconds() / 3600
-                    if diff_hours >= 0:
-                        response_times.append(diff_hours)
-                except:
-                    continue
-            
-            if response_times:
-                avg_response_time_hours = sum(response_times) / len(response_times)
-        
-        # Insert or replace
-        values = {
-            'brand_id': brand_id,
-            'week_key': week_key,
-            'week_start': week_start_dt,
-            'week_end': week_end_dt,
-            'review_count': review_count,
-            'avg_rating': avg_rating,
-            'positive_count': positive,
-            'neutral_count': neutral,
-            'negative_count': negative,
-            'organic_count': organic,
-            'verified_count': verified,
-            'invited_count': invited,
-            'avg_response_time_hours': avg_response_time_hours,
-            'top_mentions': json.dumps(top_mentions) if top_mentions else None,
-            'ai_summary': ai_summary,
-            'created_at': datetime.now(),
-        }
-        
-        if is_postgres:
-            stmt = pg_insert(weekly_snapshots).values(**values)
-            stmt = stmt.on_conflict_do_update(
-                index_elements=['brand_id', 'week_key'],
-                set_={
-                    'review_count': review_count,
-                    'avg_rating': avg_rating,
-                    'positive_count': positive,
-                    'neutral_count': neutral,
-                    'negative_count': negative,
-                    'organic_count': organic,
-                    'verified_count': verified,
-                    'invited_count': invited,
-                    'avg_response_time_hours': avg_response_time_hours,
-                    'top_mentions': json.dumps(top_mentions) if top_mentions else None,
-                    'ai_summary': ai_summary,
-                }
-            )
-        else:
-            stmt = sqlite_insert(weekly_snapshots).values(**values)
-            stmt = stmt.on_conflict_do_update(
-                index_elements=['brand_id', 'week_key'],
-                set_={
-                    'review_count': review_count,
-                    'avg_rating': avg_rating,
-                    'positive_count': positive,
-                    'neutral_count': neutral,
-                    'negative_count': negative,
-                    'organic_count': organic,
-                    'verified_count': verified,
-                    'invited_count': invited,
-                    'avg_response_time_hours': avg_response_time_hours,
-                    'top_mentions': json.dumps(top_mentions) if top_mentions else None,
-                    'ai_summary': ai_summary,
-                }
-            )
-        
-        conn.execute(stmt)
+    top_mentions = top_mentions or []
+    ai_summary = ai_summary or ""
 
-def get_snapshots_for_brand(brand_id, limit=8):
     with engine.begin() as conn:
-        results = conn.execute(
-            select(weekly_snapshots)
-            .where(weekly_snapshots.c.brand_id == brand_id)
-            .order_by(weekly_snapshots.c.week_start.desc())
-            .limit(limit)
+        rows = conn.execute(
+            text("""
+                SELECT
+                    rating,
+                    language,
+                    source,
+                    topics
+                FROM reviews
+                WHERE brand_id = :brand_id
+                  AND published_date >= :week_start
+                  AND published_date <= :week_end
+            """),
+            {
+                "brand_id": brand_id,
+                "week_start": week_start,
+                "week_end": week_end,
+            }
         ).fetchall()
-        return [dict(r._mapping) for r in results]
 
-def get_topics_by_sentiment(brand_id, week_start, week_end):
-    week_start_dt = datetime.fromisoformat(week_start) if isinstance(week_start, str) else week_start
-    week_end_dt = datetime.fromisoformat(week_end) if isinstance(week_end, str) else week_end
-    
-    with engine.begin() as conn:
-        results = conn.execute(
-            select(reviews.c.rating, reviews.c.topics)
-            .where(
-                and_(
-                    reviews.c.brand_id == brand_id,
-                    reviews.c.published_date >= week_start_dt,
-                    reviews.c.published_date <= week_end_dt,
-                    reviews.c.topics.isnot(None)
-                )
-            )
-        ).fetchall()
-        
-        positive_topics = {}
-        negative_topics = {}
-        
-        for rating, topics_json in results:
-            if not topics_json:
+        review_count = len(rows)
+        avg_rating = sum(r.rating for r in rows) / review_count if review_count else 0
+
+        positive_count = sum(1 for r in rows if r.rating >= 4)
+        neutral_count = sum(1 for r in rows if r.rating == 3)
+        negative_count = sum(1 for r in rows if r.rating <= 2)
+
+        invited_count = sum(1 for r in rows if r.source and "invited" in r.source.lower())
+        verified_count = sum(1 for r in rows if r.source and "verified" in r.source.lower())
+        organic_count = review_count - invited_count - verified_count
+
+        # ---------- LANGUAGE COUNTS ----------
+        language_counts = {}
+        for r in rows:
+            if r.language:
+                language_counts[r.language] = language_counts.get(r.language, 0) + 1
+
+        # ---------- TOPIC SENTIMENT ----------
+        mentions_sentiment = {}
+
+        for r in rows:
+            if not r.topics:
                 continue
-            
-            topics_list = json.loads(topics_json)
-            
-            for topic in topics_list:
-                if rating >= 4:
-                    positive_topics[topic] = positive_topics.get(topic, 0) + 1
-                elif rating <= 2:
-                    negative_topics[topic] = negative_topics.get(topic, 0) + 1
-        
-        positive_sorted = [{'topic': t, 'count': c} for t, c in sorted(positive_topics.items(), key=lambda x: x[1], reverse=True)]
-        negative_sorted = [{'topic': t, 'count': c} for t, c in sorted(negative_topics.items(), key=lambda x: x[1], reverse=True)]
-        
-        return {
-            'positive': positive_sorted,
-            'negative': negative_sorted
-        }
+
+            try:
+                topics = json.loads(r.topics)
+            except Exception:
+                continue
+
+            for topic in topics:
+                if topic not in mentions_sentiment:
+                    mentions_sentiment[topic] = {
+                        "positive": 0,
+                        "neutral": 0,
+                        "negative": 0,
+                    }
+
+                if r.rating >= 4:
+                    mentions_sentiment[topic]["positive"] += 1
+                elif r.rating == 3:
+                    mentions_sentiment[topic]["neutral"] += 1
+                else:
+                    mentions_sentiment[topic]["negative"] += 1
+
+        conn.execute(
+            text("""
+                INSERT INTO weekly_snapshots (
+                    brand_id,
+                    week_key,
+                    week_start,
+                    week_end,
+                    review_count,
+                    avg_rating,
+                    positive_count,
+                    neutral_count,
+                    negative_count,
+                    organic_count,
+                    verified_count,
+                    invited_count,
+                    avg_response_time_hours,
+                    top_mentions,
+                    language_counts,
+                    mentions_sentiment,
+                    ai_summary,
+                    created_at
+                )
+                VALUES (
+                    :brand_id,
+                    :week_key,
+                    :week_start,
+                    :week_end,
+                    :review_count,
+                    :avg_rating,
+                    :positive_count,
+                    :neutral_count,
+                    :negative_count,
+                    :organic_count,
+                    :verified_count,
+                    :invited_count,
+                    0,
+                    :top_mentions,
+                    :language_counts,
+                    :mentions_sentiment,
+                    :ai_summary,
+                    :created_at
+                )
+                ON CONFLICT (brand_id, week_key)
+                DO UPDATE SET
+                    review_count = EXCLUDED.review_count,
+                    avg_rating = EXCLUDED.avg_rating,
+                    positive_count = EXCLUDED.positive_count,
+                    neutral_count = EXCLUDED.neutral_count,
+                    negative_count = EXCLUDED.negative_count,
+                    organic_count = EXCLUDED.organic_count,
+                    verified_count = EXCLUDED.verified_count,
+                    invited_count = EXCLUDED.invited_count,
+                    top_mentions = EXCLUDED.top_mentions,
+                    language_counts = EXCLUDED.language_counts,
+                    mentions_sentiment = EXCLUDED.mentions_sentiment,
+                    ai_summary = EXCLUDED.ai_summary,
+                    created_at = EXCLUDED.created_at
+            """),
+            {
+                "brand_id": brand_id,
+                "week_key": week_key,
+                "week_start": week_start,
+                "week_end": week_end,
+                "review_count": review_count,
+                "avg_rating": avg_rating,
+                "positive_count": positive_count,
+                "neutral_count": neutral_count,
+                "negative_count": negative_count,
+                "organic_count": organic_count,
+                "verified_count": verified_count,
+                "invited_count": invited_count,
+                "top_mentions": json.dumps(top_mentions),
+                "language_counts": json.dumps(language_counts),
+                "mentions_sentiment": json.dumps(mentions_sentiment),
+                "ai_summary": ai_summary,
+                "created_at": datetime.utcnow(),
+            }
+        )
+
+        print(f"[INFO] Weekly snapshot saved for brand_id {brand_id}, week {week_key}")

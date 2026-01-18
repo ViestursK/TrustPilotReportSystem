@@ -9,7 +9,7 @@ import os
 # Test imports
 try:
     import sqlalchemy
-    from sqlalchemy import text
+    from sqlalchemy import text, delete
     import requests
     from dotenv import load_dotenv
     print("✓ All required packages imported successfully")
@@ -24,6 +24,31 @@ load_dotenv()
 
 # Test database connection
 from db.engine import get_engine
+from db.schema import brands, reviews, weekly_snapshots
+
+# Test domain to use (won't conflict with real data)
+TEST_DOMAIN = "test-company.com"
+
+def cleanup_test_data():
+    """Remove any existing test data"""
+    try:
+        engine = get_engine()
+        with engine.begin() as conn:
+            # Delete in correct order (foreign key constraints)
+            conn.execute(delete(weekly_snapshots).where(
+                weekly_snapshots.c.brand_id.in_(
+                    sqlalchemy.select(brands.c.id).where(brands.c.domain == TEST_DOMAIN)
+                )
+            ))
+            conn.execute(delete(reviews).where(
+                reviews.c.brand_id.in_(
+                    sqlalchemy.select(brands.c.id).where(brands.c.domain == TEST_DOMAIN)
+                )
+            ))
+            conn.execute(delete(brands).where(brands.c.domain == TEST_DOMAIN))
+    except Exception as e:
+        # Ignore errors during cleanup (table might not exist yet)
+        pass
 
 def test_database_connection():
     """Test database connectivity"""
@@ -61,7 +86,13 @@ def test_table_creation():
         # Verify tables exist
         engine = get_engine()
         with engine.connect() as conn:
-            result = conn.execute(text("SELECT name FROM sqlite_master WHERE type='table'"))
+            # Check if it's PostgreSQL or SQLite
+            db_url = str(engine.url)
+            if 'postgresql' in db_url:
+                result = conn.execute(text("SELECT tablename FROM pg_tables WHERE schemaname = 'public'"))
+            else:
+                result = conn.execute(text("SELECT name FROM sqlite_master WHERE type='table'"))
+            
             tables = [row[0] for row in result.fetchall()]
             
             expected_tables = ['brands', 'reviews', 'weekly_snapshots']
@@ -89,8 +120,10 @@ def test_brand_operations():
         from db import queries as database
         from datetime import datetime
         
+        # Clean up any existing test data first
+        cleanup_test_data()
+        
         # Test data
-        test_domain = "test-company.com"
         test_company_data = {
             'business_id': 'test123',
             'brand_name': 'Test Company',
@@ -110,7 +143,7 @@ def test_brand_operations():
         }
         
         # Add brand
-        brand_id = database.add_brand(test_domain, test_company_data)
+        brand_id = database.add_brand(TEST_DOMAIN, test_company_data)
         print(f"✓ Brand added with ID: {brand_id}")
         
         # Retrieve brand
@@ -123,8 +156,8 @@ def test_brand_operations():
         
         # Get all domains
         domains = database.get_all_brand_domains()
-        if test_domain in domains:
-            print(f"✓ Brand domain found in list: {test_domain}")
+        if TEST_DOMAIN in domains:
+            print(f"✓ Brand domain found in list: {TEST_DOMAIN}")
         else:
             print("✗ Brand domain not in list")
             return False
@@ -155,6 +188,13 @@ def main():
         except Exception as e:
             print(f"\n✗ Test '{test_name}' crashed: {e}")
             results.append((test_name, False))
+    
+    # Clean up test data after all tests
+    print("\n" + "="*60)
+    print("CLEANING UP TEST DATA")
+    print("="*60)
+    cleanup_test_data()
+    print("✓ Test data cleaned")
     
     # Summary
     print("\n" + "="*60)
