@@ -7,10 +7,6 @@ from db.engine import get_engine
 
 engine = get_engine()
 
-from sqlalchemy import text
-from db.engine import get_engine
-
-engine = get_engine()
 
 def get_brand_id(domain: str) -> int | None:
     with engine.begin() as conn:
@@ -24,11 +20,6 @@ def get_brand_id(domain: str) -> int | None:
         ).fetchone()
 
         return row.id if row else None
-
-from sqlalchemy import text
-from db.engine import get_engine
-
-engine = get_engine()
 
 
 def get_snapshots_for_brand(brand_id: int, limit: int = 10):
@@ -91,7 +82,9 @@ def calculate_and_save_snapshot(
                     rating,
                     language,
                     source,
-                    topics
+                    topics,
+                    published_date,
+                    reply_date
                 FROM reviews
                 WHERE brand_id = :brand_id
                   AND published_date >= :week_start
@@ -120,6 +113,24 @@ def calculate_and_save_snapshot(
         for r in rows:
             if r.language:
                 language_counts[r.language] = language_counts.get(r.language, 0) + 1
+
+        # ---------- RESPONSE METRICS ----------
+        replied_reviews = sum(1 for r in rows if r.reply_date)
+        response_rate = (replied_reviews / review_count * 100) if review_count else 0
+
+        # Calculate average response time (in hours)
+        response_times = []
+        for r in rows:
+            if r.reply_date and r.published_date:
+                # Convert both to datetime if they're strings
+                pub_date = r.published_date if isinstance(r.published_date, datetime) else datetime.fromisoformat(str(r.published_date).replace('Z', ''))
+                rep_date = r.reply_date if isinstance(r.reply_date, datetime) else datetime.fromisoformat(str(r.reply_date).replace('Z', ''))
+                
+                delta_hours = (rep_date - pub_date).total_seconds() / 3600
+                if delta_hours >= 0:  # Only count positive deltas
+                    response_times.append(delta_hours)
+
+        avg_response_time = sum(response_times) / len(response_times) if response_times else 0
 
         # ---------- TOPIC SENTIMENT ----------
         mentions_sentiment = {}
@@ -183,7 +194,7 @@ def calculate_and_save_snapshot(
                     :organic_count,
                     :verified_count,
                     :invited_count,
-                    0,
+                    :avg_response_time_hours,
                     :top_mentions,
                     :language_counts,
                     :mentions_sentiment,
@@ -200,6 +211,7 @@ def calculate_and_save_snapshot(
                     organic_count = EXCLUDED.organic_count,
                     verified_count = EXCLUDED.verified_count,
                     invited_count = EXCLUDED.invited_count,
+                    avg_response_time_hours = EXCLUDED.avg_response_time_hours,
                     top_mentions = EXCLUDED.top_mentions,
                     language_counts = EXCLUDED.language_counts,
                     mentions_sentiment = EXCLUDED.mentions_sentiment,
@@ -219,6 +231,7 @@ def calculate_and_save_snapshot(
                 "organic_count": organic_count,
                 "verified_count": verified_count,
                 "invited_count": invited_count,
+                "avg_response_time_hours": avg_response_time,
                 "top_mentions": json.dumps(top_mentions),
                 "language_counts": json.dumps(language_counts),
                 "mentions_sentiment": json.dumps(mentions_sentiment),
@@ -228,8 +241,10 @@ def calculate_and_save_snapshot(
         )
 
         print(f"[INFO] Weekly snapshot saved for brand_id {brand_id}, week {week_key}")
+        print(f"       Reviews: {review_count} | Avg Rating: {avg_rating:.2f}")
+        print(f"       Response Rate: {response_rate:.1f}% | Avg Response Time: {avg_response_time:.1f}h")
+        print(f"       Languages: {len(language_counts)} | Topics: {len(mentions_sentiment)}")
 
-# Add these functions to db/queries.py
 
 def get_all_brand_domains():
     """Get list of all brand domains in database"""
@@ -238,6 +253,7 @@ def get_all_brand_domains():
             text("SELECT domain FROM brands")
         ).fetchall()
         return [row[0] for row in rows]
+
 
 def add_brand(domain: str, company_data: dict) -> int:
     """Add new brand to database"""
@@ -278,6 +294,7 @@ def add_brand(domain: str, company_data: dict) -> int:
         )
         return result.fetchone()[0]
 
+
 def update_brand_metadata(brand_id: int, company_data: dict):
     """Update brand metadata"""
     with engine.begin() as conn:
@@ -301,6 +318,7 @@ def update_brand_metadata(brand_id: int, company_data: dict):
             }
         )
 
+
 def get_latest_review_id(brand_id: int) -> str | None:
     """Get most recent review ID for a brand"""
     with engine.begin() as conn:
@@ -314,6 +332,7 @@ def get_latest_review_id(brand_id: int) -> str | None:
             {"brand_id": brand_id}
         ).fetchone()
         return row[0] if row else None
+
 
 def insert_reviews(brand_id: int, reviews_list: list) -> tuple[int, int]:
     """Insert reviews with deduplication. Returns (inserted, skipped)"""
@@ -359,6 +378,7 @@ def insert_reviews(brand_id: int, reviews_list: list) -> tuple[int, int]:
                 
     return inserted, skipped
 
+
 def get_reviews_for_week(brand_id: int, week_start: str, week_end: str) -> list:
     """Get all reviews for a specific week"""
     with engine.begin() as conn:
@@ -376,6 +396,7 @@ def get_reviews_for_week(brand_id: int, week_start: str, week_end: str) -> list:
             }
         ).mappings().all()
         return [dict(row) for row in rows]
+
 
 def get_brand_info(brand_id: int) -> dict | None:
     """Get brand information"""

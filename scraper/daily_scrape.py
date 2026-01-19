@@ -7,11 +7,13 @@ Daily incremental scrape with auto-onboarding
 """
 from datetime import datetime, timedelta
 import os
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 from dotenv import load_dotenv
 from db import init_db
 from db import queries as database
-from scraper import scraper
-from scraper import onboarding
+import scraper
+import onboarding
 load_dotenv()
 
 # =============================================================================
