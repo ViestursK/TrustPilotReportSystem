@@ -7,9 +7,9 @@ Onboarding new brands:
 4. Calculate weekly snapshots (all weeks including current)
 """
 
-import scraper
+from scraper import scraper
 from db import queries as database
-import tag_topics
+from scraper import tag_topics
 from datetime import datetime, timedelta
 
 def onboard_brand(domain):

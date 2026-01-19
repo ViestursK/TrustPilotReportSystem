@@ -10,9 +10,8 @@ import os
 from dotenv import load_dotenv
 from db import init_db
 from db import queries as database
-import scraper
-import onboarding
-
+from scraper import scraper
+from scraper import onboarding
 load_dotenv()
 
 # =============================================================================
@@ -77,7 +76,7 @@ def daily_scrape_brand(domain, brand_id):
     # ==========================
     # ALWAYS TAG TOPICS
     # ==========================
-    import tag_topics
+    import scraper.tag_topics as tag_topics
     
     # Determine top mentions
     top_mentions = new_data['company'].get('top_mentions')

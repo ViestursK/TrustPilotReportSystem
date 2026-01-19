@@ -228,3 +228,160 @@ def calculate_and_save_snapshot(
         )
 
         print(f"[INFO] Weekly snapshot saved for brand_id {brand_id}, week {week_key}")
+
+# Add these functions to db/queries.py
+
+def get_all_brand_domains():
+    """Get list of all brand domains in database"""
+    with engine.begin() as conn:
+        rows = conn.execute(
+            text("SELECT domain FROM brands")
+        ).fetchall()
+        return [row[0] for row in rows]
+
+def add_brand(domain: str, company_data: dict) -> int:
+    """Add new brand to database"""
+    with engine.begin() as conn:
+        result = conn.execute(
+            text("""
+                INSERT INTO brands (
+                    domain, business_id, brand_name, trust_score, stars,
+                    total_reviews, past_week_reviews, website, is_claimed,
+                    categories, ai_summary_text, ai_summary_updated_at,
+                    ai_summary_language, ai_summary_model_version, created_at
+                )
+                VALUES (
+                    :domain, :business_id, :brand_name, :trust_score, :stars,
+                    :total_reviews, :past_week_reviews, :website, :is_claimed,
+                    :categories, :ai_summary_text, :ai_summary_updated_at,
+                    :ai_summary_language, :ai_summary_model_version, :created_at
+                )
+                RETURNING id
+            """),
+            {
+                "domain": domain,
+                "business_id": company_data['business_id'],
+                "brand_name": company_data['brand_name'],
+                "trust_score": company_data.get('trust_score'),
+                "stars": company_data.get('stars'),
+                "total_reviews": company_data.get('total_reviews'),
+                "past_week_reviews": company_data.get('past_week_reviews', 0),
+                "website": company_data.get('website'),
+                "is_claimed": company_data.get('is_claimed', False),
+                "categories": json.dumps(company_data.get('categories', [])),
+                "ai_summary_text": company_data.get('ai_summary', {}).get('summary'),
+                "ai_summary_updated_at": company_data.get('ai_summary', {}).get('updated_at'),
+                "ai_summary_language": company_data.get('ai_summary', {}).get('language'),
+                "ai_summary_model_version": company_data.get('ai_summary', {}).get('model_version'),
+                "created_at": datetime.utcnow()
+            }
+        )
+        return result.fetchone()[0]
+
+def update_brand_metadata(brand_id: int, company_data: dict):
+    """Update brand metadata"""
+    with engine.begin() as conn:
+        conn.execute(
+            text("""
+                UPDATE brands SET
+                    trust_score = :trust_score,
+                    stars = :stars,
+                    total_reviews = :total_reviews,
+                    past_week_reviews = :past_week_reviews,
+                    last_scraped_at = :last_scraped_at
+                WHERE id = :brand_id
+            """),
+            {
+                "brand_id": brand_id,
+                "trust_score": company_data.get('trust_score'),
+                "stars": company_data.get('stars'),
+                "total_reviews": company_data.get('total_reviews'),
+                "past_week_reviews": company_data.get('past_week_reviews', 0),
+                "last_scraped_at": datetime.utcnow()
+            }
+        )
+
+def get_latest_review_id(brand_id: int) -> str | None:
+    """Get most recent review ID for a brand"""
+    with engine.begin() as conn:
+        row = conn.execute(
+            text("""
+                SELECT id FROM reviews
+                WHERE brand_id = :brand_id
+                ORDER BY published_date DESC
+                LIMIT 1
+            """),
+            {"brand_id": brand_id}
+        ).fetchone()
+        return row[0] if row else None
+
+def insert_reviews(brand_id: int, reviews_list: list) -> tuple[int, int]:
+    """Insert reviews with deduplication. Returns (inserted, skipped)"""
+    inserted = 0
+    skipped = 0
+    
+    with engine.begin() as conn:
+        for review in reviews_list:
+            try:
+                conn.execute(
+                    text("""
+                        INSERT INTO reviews (
+                            id, brand_id, rating, text, title, author_name,
+                            author_id, published_date, language, source,
+                            is_verified, likes, scraped_at
+                        )
+                        VALUES (
+                            :id, :brand_id, :rating, :text, :title, :author_name,
+                            :author_id, :published_date, :language, :source,
+                            :is_verified, :likes, :scraped_at
+                        )
+                        ON CONFLICT (id) DO NOTHING
+                    """),
+                    {
+                        "id": review['id'],
+                        "brand_id": brand_id,
+                        "rating": review['rating'],
+                        "text": review.get('text'),
+                        "title": review.get('title'),
+                        "author_name": review.get('consumer', {}).get('displayName'),
+                        "author_id": review.get('consumer', {}).get('id'),
+                        "published_date": review['dates']['publishedDate'],
+                        "language": review.get('language'),
+                        "source": review.get('source'),
+                        "is_verified": review.get('isVerified', False),
+                        "likes": review.get('likes', 0),
+                        "scraped_at": datetime.utcnow()
+                    }
+                )
+                inserted += 1
+            except:
+                skipped += 1
+                
+    return inserted, skipped
+
+def get_reviews_for_week(brand_id: int, week_start: str, week_end: str) -> list:
+    """Get all reviews for a specific week"""
+    with engine.begin() as conn:
+        rows = conn.execute(
+            text("""
+                SELECT id, text, title FROM reviews
+                WHERE brand_id = :brand_id
+                  AND published_date >= :week_start
+                  AND published_date <= :week_end
+            """),
+            {
+                "brand_id": brand_id,
+                "week_start": week_start,
+                "week_end": week_end
+            }
+        ).mappings().all()
+        return [dict(row) for row in rows]
+
+def get_brand_info(brand_id: int) -> dict | None:
+    """Get brand information"""
+    with engine.begin() as conn:
+        row = conn.execute(
+            text("SELECT * FROM brands WHERE id = :brand_id"),
+            {"brand_id": brand_id}
+        ).mappings().fetchone()
+        return dict(row) if row else None

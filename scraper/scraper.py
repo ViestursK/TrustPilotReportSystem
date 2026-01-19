@@ -14,6 +14,16 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+# Load topic translation map
+try:
+    filepath = os.path.join(os.path.dirname(__file__), 'tp_topics.json')
+    with open(filepath) as f:
+        ALL_TOPICS = json.load(f)
+        print(f"[SUCCESS] Loaded {len(ALL_TOPICS)} Trustpilot topics")
+except FileNotFoundError:
+    print("[WARNING] tp_topics.json not found, topic translation disabled")
+    ALL_TOPICS = {}
+
 # =============================================================================
 # CONFIGURATION
 # =============================================================================
