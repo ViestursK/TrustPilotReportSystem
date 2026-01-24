@@ -4,9 +4,6 @@ Tag reviews with topics using multilingual keyword matching
 """
 
 import json
-import sys
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
 from sqlalchemy import update, text
 from db.engine import get_engine
 from db.schema import reviews

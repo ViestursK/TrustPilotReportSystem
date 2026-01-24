@@ -14,19 +14,24 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+# =============================================================================
+# CONFIGURATION
+# =============================================================================
+
 # Load topic translation map
 try:
-    filepath = os.path.join(os.path.dirname(__file__), 'tp_topics.json')
+    # Try current directory first, then parent directory
+    if os.path.exists('tp_topics.json'):
+        filepath = 'tp_topics.json'
+    else:
+        filepath = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'tp_topics.json')
+    
     with open(filepath) as f:
         ALL_TOPICS = json.load(f)
         print(f"[SUCCESS] Loaded {len(ALL_TOPICS)} Trustpilot topics")
 except FileNotFoundError:
     print("[WARNING] tp_topics.json not found, topic translation disabled")
     ALL_TOPICS = {}
-
-# =============================================================================
-# CONFIGURATION
-# =============================================================================
 
 QUERY_PARAMS = "?date=last30days&languages=all"
 
@@ -45,15 +50,6 @@ def get_headers(use_jwt=False):
             print("[WARNING] JWT not found in .env, proceeding without authentication")
     
     return headers
-
-# Load topic translation map
-try:
-    with open('tp_topics.json') as f:
-        ALL_TOPICS = json.load(f)
-        print(f"[SUCCESS] Loaded {len(ALL_TOPICS)} Trustpilot topics")
-except FileNotFoundError:
-    print("[WARNING] tp_topics.json not found, topic translation disabled")
-    ALL_TOPICS = {}
 
 # =============================================================================
 # HELPER FUNCTIONS

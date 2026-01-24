@@ -9,13 +9,12 @@ Onboarding new brands:
 
 import sys
 import os
-# Add parent directory to Python path
+# Add parent directory to path so we can import from project root
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-# Now we can import from project root
-from scraper.scraper import scrape_brand, get_top_mentions
+from scraper import trustpilot_scraper
 from db import queries as database
-from scraper.tag_topics import tag_reviews_with_topics
+from scraper import tag_topics
 from datetime import datetime, timedelta
 
 def onboard_brand(domain):
@@ -26,7 +25,7 @@ def onboard_brand(domain):
     print("="*70)
 
     # 1️⃣ Full scrape (unlimited pages, JWT if available)
-    brand_data = scrape_brand(domain, max_pages=None, use_jwt=True)
+    brand_data = trustpilot_scraper.scrape_brand(domain, max_pages=None, use_jwt=True)
     if not brand_data:
         print(f"[ERROR] Failed to onboard {domain}")
         return
@@ -51,7 +50,7 @@ def onboard_brand(domain):
     # 4️⃣ Tag all reviews with topics
     if top_mentions:
         print(f"[INFO] Tagging reviews with {len(top_mentions)} topics...")
-        tag_reviews_with_topics(domain, brand_id, top_mentions)
+        tag_topics.tag_reviews_with_topics(domain, brand_id, top_mentions)
     else:
         print("[WARNING] No top mentions available for tagging")
 
@@ -81,7 +80,7 @@ def onboard_brand(domain):
             week_key,
             week_monday.isoformat(),
             week_sunday.isoformat(),
-            top_mentions=top_mentions,
+            top_mentions=top_mentions,  # Pass top_mentions for all snapshots
             ai_summary=company_data.get('ai_summary', {}).get('summary')
         )
         weeks_created += 1
@@ -102,6 +101,7 @@ def onboard_brand(domain):
 
 
 if __name__ == "__main__":
+    import sys
     if len(sys.argv) < 2:
         print("\nUsage: python onboarding.py <domain>")
         print("Example: python onboarding.py ketogo.app\n")

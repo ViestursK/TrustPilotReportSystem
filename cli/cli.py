@@ -4,6 +4,10 @@ CLI tool to manage brands and view weekly snapshots
 """
 
 import sys
+import os
+# Add parent directory to path so we can import from project root
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 import json
 from db.engine import get_engine
 from db.schema import brands, reviews, weekly_snapshots
@@ -96,7 +100,7 @@ def show_snapshots(domain, limit=8, pretty=True):
 
 def show_help():
     print("""
-Usage: python manage_brands.py [command] [domain]
+Usage: python cli/cli.py [command] [domain]
 
 Commands:
   list                 List all brands in database
@@ -105,9 +109,9 @@ Commands:
   help                 Show this help message
 
 Examples:
-  python manage_brands.py list
-  python manage_brands.py remove test-company.com
-  python manage_brands.py snapshots ketogo.app
+  python cli/cli.py list
+  python cli/cli.py remove test-company.com
+  python cli/cli.py snapshots ketogo.app
 """)
 
 

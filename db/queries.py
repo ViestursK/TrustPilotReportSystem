@@ -7,7 +7,6 @@ from db.engine import get_engine
 
 engine = get_engine()
 
-
 def get_brand_id(domain: str) -> int | None:
     with engine.begin() as conn:
         row = conn.execute(
@@ -84,7 +83,8 @@ def calculate_and_save_snapshot(
                     source,
                     topics,
                     published_date,
-                    reply_date
+                    reply_date,
+                    reply_message
                 FROM reviews
                 WHERE brand_id = :brand_id
                   AND published_date >= :week_start
@@ -108,29 +108,49 @@ def calculate_and_save_snapshot(
         verified_count = sum(1 for r in rows if r.source and "verified" in r.source.lower())
         organic_count = review_count - invited_count - verified_count
 
+        # ---------- CALCULATE RESPONSE TIME & RATE ----------
+        response_times = []
+        replied_count = 0
+        
+        for r in rows:
+            # Only count reviews that have an actual reply message
+            has_reply = False
+            
+            # Check if reply_message column exists and has content
+            # (reply_message is only populated if there's an actual reply from the business)
+            if hasattr(r, 'reply_message') and r.reply_message:
+                has_reply = True
+            
+            if has_reply:
+                replied_count += 1
+                
+                # Try to calculate response time if both dates are available
+                if r.reply_date and r.published_date:
+                    try:
+                        if isinstance(r.published_date, str):
+                            pub_date = datetime.fromisoformat(r.published_date.replace('Z', ''))
+                        else:
+                            pub_date = r.published_date
+                        
+                        if isinstance(r.reply_date, str):
+                            rep_date = datetime.fromisoformat(r.reply_date.replace('Z', ''))
+                        else:
+                            rep_date = r.reply_date
+                        
+                        time_diff = (rep_date - pub_date).total_seconds() / 3600  # hours
+                        if time_diff >= 0:  # Only count valid response times
+                            response_times.append(time_diff)
+                    except Exception:
+                        pass
+        
+        avg_response_time_hours = sum(response_times) / len(response_times) if response_times else 0
+        response_rate = (replied_count / review_count * 100) if review_count else 0
+
         # ---------- LANGUAGE COUNTS ----------
         language_counts = {}
         for r in rows:
             if r.language:
                 language_counts[r.language] = language_counts.get(r.language, 0) + 1
-
-        # ---------- RESPONSE METRICS ----------
-        replied_reviews = sum(1 for r in rows if r.reply_date)
-        response_rate = (replied_reviews / review_count * 100) if review_count else 0
-
-        # Calculate average response time (in hours)
-        response_times = []
-        for r in rows:
-            if r.reply_date and r.published_date:
-                # Convert both to datetime if they're strings
-                pub_date = r.published_date if isinstance(r.published_date, datetime) else datetime.fromisoformat(str(r.published_date).replace('Z', ''))
-                rep_date = r.reply_date if isinstance(r.reply_date, datetime) else datetime.fromisoformat(str(r.reply_date).replace('Z', ''))
-                
-                delta_hours = (rep_date - pub_date).total_seconds() / 3600
-                if delta_hours >= 0:  # Only count positive deltas
-                    response_times.append(delta_hours)
-
-        avg_response_time = sum(response_times) / len(response_times) if response_times else 0
 
         # ---------- TOPIC SENTIMENT ----------
         mentions_sentiment = {}
@@ -231,7 +251,7 @@ def calculate_and_save_snapshot(
                 "organic_count": organic_count,
                 "verified_count": verified_count,
                 "invited_count": invited_count,
-                "avg_response_time_hours": avg_response_time,
+                "avg_response_time_hours": avg_response_time_hours,
                 "top_mentions": json.dumps(top_mentions),
                 "language_counts": json.dumps(language_counts),
                 "mentions_sentiment": json.dumps(mentions_sentiment),
@@ -242,7 +262,7 @@ def calculate_and_save_snapshot(
 
         print(f"[INFO] Weekly snapshot saved for brand_id {brand_id}, week {week_key}")
         print(f"       Reviews: {review_count} | Avg Rating: {avg_rating:.2f}")
-        print(f"       Response Rate: {response_rate:.1f}% | Avg Response Time: {avg_response_time:.1f}h")
+        print(f"       Response Rate: {response_rate:.1f}% | Avg Response Time: {avg_response_time_hours:.1f}h")
         print(f"       Languages: {len(language_counts)} | Topics: {len(mentions_sentiment)}")
 
 
@@ -347,12 +367,12 @@ def insert_reviews(brand_id: int, reviews_list: list) -> tuple[int, int]:
                         INSERT INTO reviews (
                             id, brand_id, rating, text, title, author_name,
                             author_id, published_date, language, source,
-                            is_verified, likes, scraped_at
+                            is_verified, likes, reply_message, reply_date, scraped_at
                         )
                         VALUES (
                             :id, :brand_id, :rating, :text, :title, :author_name,
                             :author_id, :published_date, :language, :source,
-                            :is_verified, :likes, :scraped_at
+                            :is_verified, :likes, :reply_message, :reply_date, :scraped_at
                         )
                         ON CONFLICT (id) DO NOTHING
                     """),
@@ -369,6 +389,8 @@ def insert_reviews(brand_id: int, reviews_list: list) -> tuple[int, int]:
                         "source": review.get('source'),
                         "is_verified": review.get('isVerified', False),
                         "likes": review.get('likes', 0),
+                        "reply_message": review.get('reply', {}).get('message'),
+                        "reply_date": review.get('reply', {}).get('publishedDate'),
                         "scraped_at": datetime.utcnow()
                     }
                 )

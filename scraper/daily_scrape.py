@@ -5,15 +5,19 @@ Daily incremental scrape with auto-onboarding
 2. Scrapes existing brands (last 30 days, max 10 pages)
 3. Updates database with deduplication
 """
-from datetime import datetime, timedelta
+import sys
 import os
+# Add parent directory to path so we can import from project root
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from datetime import datetime, timedelta
 from dotenv import load_dotenv
 from db import init_db
 from db import queries as database
-import scraper
-import onboarding
+from scraper import trustpilot_scraper
+from scraper import onboarding
+from scraper import tag_topics
+
 load_dotenv()
 
 # =============================================================================
@@ -54,7 +58,7 @@ def daily_scrape_brand(domain, brand_id):
     # Scrape last 30 days (max 10 pages)
     max_pages = int(os.getenv('MAX_PAGES', 10))
     print(f"\n[INFO] Scraping last 30 days (max {max_pages} pages, public data)...")
-    new_data = scraper.scrape_brand(
+    new_data = trustpilot_scraper.scrape_brand(
         domain, 
         max_pages=max_pages, 
         use_jwt=False,
@@ -78,13 +82,12 @@ def daily_scrape_brand(domain, brand_id):
     # ==========================
     # ALWAYS TAG TOPICS
     # ==========================
-    import scraper.tag_topics as tag_topics
     
     # Determine top mentions
     top_mentions = new_data['company'].get('top_mentions')
     if not top_mentions:
         # Fetch current top mentions from Trustpilot if missing
-        top_mentions = scraper.get_top_mentions(new_data['company']['business_id'])
+        top_mentions = trustpilot_scraper.get_top_mentions(new_data['company']['business_id'])
     
     if top_mentions:
         # Get current week's reviews

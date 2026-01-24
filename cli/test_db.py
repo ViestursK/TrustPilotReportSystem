@@ -5,6 +5,8 @@ Test script to verify database setup and basic functionality
 
 import sys
 import os
+# Add parent directory to path so we can import from project root
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 # Test imports
 try:
@@ -210,8 +212,8 @@ def main():
     if all_passed:
         print("\n✓ ALL TESTS PASSED")
         print("\nYou can now run:")
-        print("  python onboarding.py <domain>  # Onboard a new brand")
-        print("  python daily_scrape.py          # Run daily scrape")
+        print("  python scraper/onboarding.py <domain>  # Onboard a new brand")
+        print("  python scraper/daily_scrape.py          # Run daily scrape")
     else:
         print("\n✗ SOME TESTS FAILED")
         print("\nPlease fix the issues above before proceeding.")
